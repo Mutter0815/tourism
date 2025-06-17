@@ -14,3 +14,5 @@ logs:
 
 test:
 	go test ./...
+builds:
+	docker-compose up --build -d

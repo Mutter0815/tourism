@@ -17,19 +17,20 @@ import (
 )
 
 func main() {
-	// Подключение к базе данных (аналогично API)
+	// Подключение к базе данных
 	dbHost := os.Getenv("DB_HOST")
-	dbPort := os.Getenv("DB_PORT")
-	dbUser := os.Getenv("DB_USER")
-	dbPass := os.Getenv("DB_PASS")
-	dbName := os.Getenv("DB_NAME")
 	if dbHost == "" {
 		dbHost = "db"
 	}
+	dbPort := os.Getenv("DB_PORT")
 	if dbPort == "" {
 		dbPort = "5432"
 	}
-	dsn := "host=" + dbHost + " port=" + dbPort + " user=" + dbUser + " password=" + dbPass + " dbname=" + dbName + " sslmode=disable"
+	dsn := fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+		dbHost, dbPort,
+		os.Getenv("DB_USER"), os.Getenv("DB_PASS"), os.Getenv("DB_NAME"),
+	)
 	db, err := sqlx.Connect("postgres", dsn)
 	if err != nil {
 		log.Fatalf("DB connection failed: %v", err)
@@ -44,7 +45,6 @@ func main() {
 	subRepo := repository.NewSubscriptionRepository(db)
 
 	authService := service.NewAuthService(userRepo)
-	userService := service.NewUserService(userRepo)
 	locationService := service.NewLocationService(locationRepo)
 	tripService := service.NewTripService(tripRepo, locationRepo)
 	bookingService := service.NewBookingService(bookingRepo)
@@ -66,266 +66,272 @@ func main() {
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
 
-	// Карты для отслеживания состояния диалога
-	activeTrip := make(map[int64]int)      // текущий активный маршрут (TripID) для пользователя
-	pendingBooking := make(map[int64]int)  // ожидаем детали бронирования для указанной локации
-	pendingAddPhoto := make(map[int64]int) // ожидаем отправки фото для указанной локации (администратор)
+	// Состояние диалогов
+	activeTrip := make(map[int64]int)      // userID -> TripID
+	pendingBooking := make(map[int64]int)  // userID -> LocationID
+	pendingAddPhoto := make(map[int64]int) // userID -> LocationID
 
 	for update := range updates {
-		// 1. Обработка нажатий инлайн-кнопок (CallbackQuery)
-		if update.CallbackQuery != nil {
-			callbackID := update.CallbackQuery.ID
-			bot.Request(tgbotapi.NewCallback(callbackID, ""))
-			data := update.CallbackQuery.Data
-			fromID := update.CallbackQuery.From.ID
+		// --- CallbackQuery (inline buttons) ---
+		if cq := update.CallbackQuery; cq != nil {
+			bot.Request(tgbotapi.NewCallback(cq.ID, ""))
 
-			if strings.HasPrefix(data, "LOC_") {
-				// Выбрана локация из списка
-				locIDStr := strings.TrimPrefix(data, "LOC_")
-				locID, _ := strconv.Atoi(locIDStr)
-				location, photos, err := locationService.GetLocationDetails(locID)
+			fromID := cq.From.ID
+			data := cq.Data
+
+			switch {
+			// Показ деталей локации
+			case strings.HasPrefix(data, "LOC_"):
+				locID, _ := strconv.Atoi(strings.TrimPrefix(data, "LOC_"))
+				loc, photos, err := locationService.GetLocationDetails(locID)
 				if err != nil {
-					bot.Send(tgbotapi.NewMessage(fromID, "Ошибка при получении данных о локации."))
-				} else {
-					// Отправляем фотографии локации
-					if len(photos) > 0 {
-						for _, ph := range photos {
-							photoMsg := tgbotapi.NewPhoto(fromID, tgbotapi.FileID(ph.FileID))
-							bot.Send(photoMsg)
-						}
-					}
-					// Описание и ссылка
-					text := fmt.Sprintf("*%s*\n%s\n\n[Открыть в картах](https://maps.google.com/?q=%f,%f)",
-						location.Name, location.Description, location.Latitude, location.Longitude)
-					msg := tgbotapi.NewMessage(fromID, text)
-					msg.ParseMode = "Markdown"
-					buttons := []tgbotapi.InlineKeyboardButton{
-						tgbotapi.NewInlineKeyboardButtonData("Добавить в маршрут", fmt.Sprintf("ADDTRIP_%d", location.ID)),
-						tgbotapi.NewInlineKeyboardButtonData("Забронировать", fmt.Sprintf("BOOK_%d", location.ID)),
-					}
-					msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(buttons)
-					bot.Send(msg)
+					bot.Send(tgbotapi.NewMessage(fromID, "Ошибка получения локации."))
+					continue
 				}
-			} else if strings.HasPrefix(data, "ADDTRIP_") {
-				locIDStr := strings.TrimPrefix(data, "ADDTRIP_")
-				locID, _ := strconv.Atoi(locIDStr)
-				tripID, ok := activeTrip[fromID]
-				reply := ""
-				if !ok {
-					reply = "У вас нет активной поездки. Введите /newtrip для создания маршрута."
-				} else {
-					err := tripService.AddLocationToTrip(tripID, locID)
-					if err != nil {
-						reply = "Ошибка добавления локации в маршрут."
+
+				// Галерея фото
+				for _, ph := range photos {
+					bot.Send(tgbotapi.NewPhoto(fromID, tgbotapi.FileID(ph.FileID)))
+				}
+
+				// Описание + карта
+				text := fmt.Sprintf(
+					"*%s*\n%s\n\n[Открыть в картах](https://maps.google.com/?q=%f,%f)",
+					loc.Name, loc.Description, loc.Latitude, loc.Longitude,
+				)
+				msg := tgbotapi.NewMessage(fromID, text)
+				msg.ParseMode = "Markdown"
+
+				// Кнопки
+				btnAdd := tgbotapi.NewInlineKeyboardButtonData("Добавить в маршрут", fmt.Sprintf("ADDTRIP_%d", loc.ID))
+				btnBook := tgbotapi.NewInlineKeyboardButtonData("Забронировать", fmt.Sprintf("BOOK_%d", loc.ID))
+				row := tgbotapi.NewInlineKeyboardRow(btnAdd, btnBook)
+				msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(row)
+
+				bot.Send(msg)
+
+			// Добавление в маршрут
+			case strings.HasPrefix(data, "ADDTRIP_"):
+				locID, _ := strconv.Atoi(strings.TrimPrefix(data, "ADDTRIP_"))
+				if tripID, ok := activeTrip[fromID]; ok {
+					if err := tripService.AddLocationToTrip(tripID, locID); err != nil {
+						bot.Send(tgbotapi.NewMessage(fromID, "Ошибка добавления локации."))
 					} else {
-						reply = "Локация добавлена в ваш маршрут."
+						bot.Send(tgbotapi.NewMessage(fromID, "Локация добавлена в маршрут."))
 					}
+				} else {
+					bot.Send(tgbotapi.NewMessage(fromID, "Нет активного маршрута. Введите /newtrip."))
 				}
-				bot.Send(tgbotapi.NewMessage(fromID, reply))
-			} else if strings.HasPrefix(data, "BOOK_") {
-				locIDStr := strings.TrimPrefix(data, "BOOK_")
-				locID, _ := strconv.Atoi(locIDStr)
+
+			// Начать бронирование
+			case strings.HasPrefix(data, "BOOK_"):
+				locID, _ := strconv.Atoi(strings.TrimPrefix(data, "BOOK_"))
 				pendingBooking[fromID] = locID
-				bot.Send(tgbotapi.NewMessage(fromID, "Пожалуйста, отправьте детали бронирования (даты, количество людей и др.)."))
-			} else if strings.HasPrefix(data, "CONFIRM_") {
-				bookIDStr := strings.TrimPrefix(data, "CONFIRM_")
-				bookID, _ := strconv.Atoi(bookIDStr)
+				bot.Send(tgbotapi.NewMessage(fromID, "Отправьте детали брони (даты, число людей)."))
+
+			// Подтвердить бронирование (для провайдера)
+			case strings.HasPrefix(data, "CONFIRM_"):
+				bookID, _ := strconv.Atoi(strings.TrimPrefix(data, "CONFIRM_"))
 				bookingService.ConfirmBooking(bookID)
 				booking, _ := bookingService.GetBooking(bookID)
-				touristUser, _ := userRepo.GetByID(booking.UserID)
-				bot.Send(tgbotapi.NewMessage(touristUser.TelegramID, "Ваше бронирование подтверждено!"))
+				tourist, _ := userRepo.GetByID(booking.UserID)
+				bot.Send(tgbotapi.NewMessage(tourist.TelegramID, "Ваше бронирование подтверждено!"))
 				bot.Send(tgbotapi.NewMessage(fromID, "Вы подтвердили бронирование."))
-			} else if strings.HasPrefix(data, "REJECT_") {
-				bookIDStr := strings.TrimPrefix(data, "REJECT_")
-				bookID, _ := strconv.Atoi(bookIDStr)
+
+			// Отклонить бронирование
+			case strings.HasPrefix(data, "REJECT_"):
+				bookID, _ := strconv.Atoi(strings.TrimPrefix(data, "REJECT_"))
 				bookingService.RejectBooking(bookID)
 				booking, _ := bookingService.GetBooking(bookID)
-				touristUser, _ := userRepo.GetByID(booking.UserID)
-				bot.Send(tgbotapi.NewMessage(touristUser.TelegramID, "Ваше бронирование отклонено."))
+				tourist, _ := userRepo.GetByID(booking.UserID)
+				bot.Send(tgbotapi.NewMessage(tourist.TelegramID, "Ваше бронирование отклонено."))
 				bot.Send(tgbotapi.NewMessage(fromID, "Вы отклонили бронирование."))
 			}
+
 			continue
 		}
 
-		// 2. Обработка текстовых сообщений
+		// --- Обычные сообщения ---
 		if update.Message == nil {
 			continue
 		}
 		msg := update.Message
 		chatID := msg.Chat.ID
-		userTelegramID := msg.From.ID
+		userID := msg.From.ID
 
+		// Команды
 		if msg.IsCommand() {
 			switch msg.Command() {
 			case "start":
-				user, err := authService.AuthUser(userTelegramID, msg.From.UserName, msg.From.FirstName, msg.From.LastName)
+				user, err := authService.AuthUser(userID, msg.From.UserName, msg.From.FirstName, msg.From.LastName)
 				if err != nil {
 					bot.Send(tgbotapi.NewMessage(chatID, "Ошибка авторизации."))
 				} else {
-					welcome := fmt.Sprintf("Здравствуйте, %s! Добро пожаловать в Tourist Support.", user.FirstName)
-					bot.Send(tgbotapi.NewMessage(chatID, welcome))
+					bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Здравствуйте, %s!", user.FirstName)))
 				}
+
 			case "locations":
-				bot.Send(tgbotapi.NewMessage(chatID, "Введите ключевое слово для поиска локаций (или отправьте '*' для просмотра всех):"))
+				bot.Send(tgbotapi.NewMessage(chatID, "Введите слово для поиска (или * для всех):"))
+
 			case "newtrip":
-				user, err := userRepo.GetByTelegramID(userTelegramID)
+				user, err := userRepo.GetByTelegramID(userID)
 				if err != nil {
-					user, _ = authService.AuthUser(userTelegramID, msg.From.UserName, msg.From.FirstName, msg.From.LastName)
+					user, _ = authService.AuthUser(userID, msg.From.UserName, msg.From.FirstName, msg.From.LastName)
 				}
 				tripID, err := tripService.CreateTrip(user.ID, "Мой маршрут")
 				if err != nil {
-					bot.Send(tgbotapi.NewMessage(chatID, "Ошибка при создании нового маршрута."))
+					bot.Send(tgbotapi.NewMessage(chatID, "Не удалось создать маршрут."))
 				} else {
-					activeTrip[userTelegramID] = tripID
-					bot.Send(tgbotapi.NewMessage(chatID, "Новый маршрут создан. Теперь вы можете добавлять локации командой \"Добавить в маршрут\" в описании локации."))
+					activeTrip[userID] = tripID
+					bot.Send(tgbotapi.NewMessage(chatID, "Маршрут создан. Добавляйте локации."))
 				}
+
 			case "support":
-				bot.Send(tgbotapi.NewMessage(chatID, "Для связи с оператором поддержки перейдите в чат со службой поддержки @TouristSupportHelpBot (бот поддержки)."))
+				bot.Send(tgbotapi.NewMessage(chatID, "Перейдите в @TouristSupportHelpBot для поддержки."))
+
 			case "subscribe_offers":
-				user, err := userRepo.GetByTelegramID(userTelegramID)
+				user, err := userRepo.GetByTelegramID(userID)
 				if err != nil {
-					user, _ = authService.AuthUser(userTelegramID, msg.From.UserName, msg.From.FirstName, msg.From.LastName)
+					user, _ = authService.AuthUser(userID, msg.From.UserName, msg.From.FirstName, msg.From.LastName)
 				}
 				offerService.Subscribe(user.ID)
-				bot.Send(tgbotapi.NewMessage(chatID, "Вы подписаны на рассылку интересных предложений."))
+				bot.Send(tgbotapi.NewMessage(chatID, "Вы подписаны на рассылку предложений."))
+
 			case "unsubscribe_offers":
-				user, err := userRepo.GetByTelegramID(userTelegramID)
+				user, err := userRepo.GetByTelegramID(userID)
 				if err != nil {
-					user, _ = authService.AuthUser(userTelegramID, msg.From.UserName, msg.From.FirstName, msg.From.LastName)
+					user, _ = authService.AuthUser(userID, msg.From.UserName, msg.From.FirstName, msg.From.LastName)
 				}
 				offerService.Unsubscribe(user.ID)
-				bot.Send(tgbotapi.NewMessage(chatID, "Вы отписаны от рассылки предложений."))
+				bot.Send(tgbotapi.NewMessage(chatID, "Вы отписаны от рассылки."))
+
 			case "addphoto":
 				args := msg.CommandArguments()
-				if args == "" {
-					bot.Send(tgbotapi.NewMessage(chatID, "Использование: /addphoto <ID_локации>"))
+				locID, err := strconv.Atoi(args)
+				if args == "" || err != nil {
+					bot.Send(tgbotapi.NewMessage(chatID, "Используйте: /addphoto <ид_локации>"))
 				} else {
-					locID, err := strconv.Atoi(args)
-					if err != nil {
-						bot.Send(tgbotapi.NewMessage(chatID, "Некорректный ID локации."))
+					user, _ := userRepo.GetByTelegramID(userID)
+					if user.Role != "support" {
+						bot.Send(tgbotapi.NewMessage(chatID, "Нет прав для добавления фото."))
 					} else {
-						user, err := userRepo.GetByTelegramID(userTelegramID)
-						if err != nil {
-							bot.Send(tgbotapi.NewMessage(chatID, "Вы не зарегистрированы."))
-						} else if user.Role != "support" {
-							bot.Send(tgbotapi.NewMessage(chatID, "У вас нет прав для добавления фото."))
-						} else {
-							pendingAddPhoto[userTelegramID] = locID
-							bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Отправьте фотографию для локации #%d", locID)))
-						}
+						pendingAddPhoto[userID] = locID
+						bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Отправьте фото для локации #%d", locID)))
 					}
 				}
+
 			case "broadcast":
-				user, err := userRepo.GetByTelegramID(userTelegramID)
-				if err != nil || user.Role != "support" {
-					bot.Send(tgbotapi.NewMessage(chatID, "Команда недоступна."))
+				user, _ := userRepo.GetByTelegramID(userID)
+				if user.Role != "support" {
+					bot.Send(tgbotapi.NewMessage(chatID, "Команда доступна только поддержке."))
 				} else {
-					msgText := msg.CommandArguments()
-					if msgText == "" {
-						bot.Send(tgbotapi.NewMessage(chatID, "Использование: /broadcast <сообщение>"))
+					text := msg.CommandArguments()
+					if text == "" {
+						bot.Send(tgbotapi.NewMessage(chatID, "Используйте: /broadcast <текст>"))
 					} else {
-						ids, err := offerService.GetSubscriberIDs()
-						if err != nil {
-							bot.Send(tgbotapi.NewMessage(chatID, "Не удалось получить список подписчиков."))
-						} else {
-							for _, tid := range ids {
-								bot.Send(tgbotapi.NewMessage(tid, msgText))
-							}
-							bot.Send(tgbotapi.NewMessage(chatID, "Рассылка отправлена подписчикам."))
+						ids, _ := offerService.GetSubscriberIDs()
+						for _, tid := range ids {
+							bot.Send(tgbotapi.NewMessage(tid, text))
 						}
+						bot.Send(tgbotapi.NewMessage(chatID, "Рассылка отправлена."))
 					}
 				}
 			}
 			continue
 		}
 
-		// Если ожидаются детали бронирования
-		if locID, ok := pendingBooking[userTelegramID]; ok {
+		// Обработка «ожидающих» состояний
+
+		// Детали бронирования
+		if locID, ok := pendingBooking[userID]; ok {
 			details := msg.Text
-			delete(pendingBooking, userTelegramID)
-			user, _ := userRepo.GetByTelegramID(userTelegramID)
+			delete(pendingBooking, userID)
+
+			user, _ := userRepo.GetByTelegramID(userID)
 			if user == nil {
-				user, _ = authService.AuthUser(userTelegramID, msg.From.UserName, msg.From.FirstName, msg.From.LastName)
+				user, _ = authService.AuthUser(userID, msg.From.UserName, msg.From.FirstName, msg.From.LastName)
 			}
-			bookingID, err := bookingService.CreateBooking(user.ID, locID, details)
+			bookID, err := bookingService.CreateBooking(user.ID, locID, details)
 			if err != nil {
-				bot.Send(tgbotapi.NewMessage(chatID, "Не удалось создать бронирование."))
+				bot.Send(tgbotapi.NewMessage(chatID, "Ошибка создания брони."))
 			} else {
-				location, _ := locationRepo.GetByID(locID)
-				if location.ProviderID != nil {
-					provider, err := userRepo.GetByID(*location.ProviderID)
-					if err == nil {
-						text := fmt.Sprintf("Новая заявка на бронирование от пользователя %s по локации \"%s\".\nДетали: %s", msg.From.FirstName, location.Name, details)
-						confirmBtn := tgbotapi.NewInlineKeyboardButtonData("Подтвердить", fmt.Sprintf("CONFIRM_%d", bookingID))
-						rejectBtn := tgbotapi.NewInlineKeyboardButtonData("Отклонить", fmt.Sprintf("REJECT_%d", bookingID))
-						markup := tgbotapi.NewInlineKeyboardMarkup(confirmBtn, rejectBtn)
-						notify := tgbotapi.NewMessage(provider.TelegramID, text)
-						notify.ReplyMarkup = markup
-						bot.Send(notify)
-					}
+				loc, _ := locationRepo.GetByID(locID)
+				if loc.ProviderID != nil {
+					prov, _ := userRepo.GetByID(*loc.ProviderID)
+					text := fmt.Sprintf(
+						"Новая бронь: %s ▶ %s\n%s",
+						user.FirstName, loc.Name, details,
+					)
+					btnC := tgbotapi.NewInlineKeyboardButtonData("✔ Подтвердить", fmt.Sprintf("CONFIRM_%d", bookID))
+					btnR := tgbotapi.NewInlineKeyboardButtonData("✖ Отклонить", fmt.Sprintf("REJECT_%d", bookID))
+					row := tgbotapi.NewInlineKeyboardRow(btnC, btnR)
+					notify := tgbotapi.NewMessage(prov.TelegramID, text)
+					notify.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(row)
+					bot.Send(notify)
 				}
-				bot.Send(tgbotapi.NewMessage(chatID, "Ваша заявка отправлена. Ожидайте подтверждения от провайдера."))
+				bot.Send(tgbotapi.NewMessage(chatID, "Заявка отправлена провайдеру."))
 			}
 			continue
 		}
-		// Если ожидается фото для локации
-		if locID, ok := pendingAddPhoto[userTelegramID]; ok {
-			if msg.Photo != nil && len(*msg.Photo) > 0 {
-				photos := *msg.Photo
-				fileID := photos[len(photos)-1].FileID
+
+		// Добавление фото
+		if locID, ok := pendingAddPhoto[userID]; ok {
+			if len(msg.Photo) > 0 {
+				fileID := msg.Photo[len(msg.Photo)-1].FileID
 				err := locationService.AddPhoto(locID, fileID)
 				if err != nil {
 					bot.Send(tgbotapi.NewMessage(chatID, "Ошибка сохранения фото."))
 				} else {
-					bot.Send(tgbotapi.NewMessage(chatID, "Фото добавлено в галерею локации."))
+					bot.Send(tgbotapi.NewMessage(chatID, "Фото добавлено."))
 				}
 			} else {
-				bot.Send(tgbotapi.NewMessage(chatID, "Ожидается фотография. Пожалуйста, отправьте изображение."))
+				bot.Send(tgbotapi.NewMessage(chatID, "Ожидается фото."))
 			}
-			delete(pendingAddPhoto, userTelegramID)
+			delete(pendingAddPhoto, userID)
 			continue
 		}
-		// Если пользователь в режиме чата турист↔поставщик
-		partnerID := chatService.GetChatPartner(userTelegramID)
-		if partnerID != 0 {
-			partner, err := userRepo.GetByTelegramID(partnerID)
-			if err == nil {
-				senderName := msg.From.FirstName
-				outText := fmt.Sprintf("%s: %s", senderName, msg.Text)
-				bot.Send(tgbotapi.NewMessage(partnerID, outText))
-				sender, _ := userRepo.GetByTelegramID(userTelegramID)
-				receiver, _ := userRepo.GetByTelegramID(partnerID)
-				bookingID := chatService.GetChatBookingID(userTelegramID)
-				messageRepo.Save(&model.Message{FromUserID: sender.ID, ToUserID: receiver.ID, BookingID: &bookingID, Content: msg.Text, IsSupport: false})
-			}
+
+		// Режим чат турист↔провайдер
+		if partnerID := chatService.GetChatPartner(userID); partnerID != 0 {
+			out := fmt.Sprintf("%s: %s", msg.From.FirstName, msg.Text)
+			bot.Send(tgbotapi.NewMessage(partnerID, out))
+
+			// Сохраняем в БД
+			sender, _ := userRepo.GetByTelegramID(userID)
+			receiver, _ := userRepo.GetByTelegramID(partnerID)
+			bID := chatService.GetChatBookingID(userID)
+			messageRepo.Save(&model.Message{
+				FromUserID: sender.ID,
+				ToUserID:   receiver.ID,
+				BookingID:  &bID,
+				Content:    msg.Text,
+				IsSupport:  false,
+			})
 			continue
 		}
-		// Иначе обрабатываем сообщение как поисковый запрос по локациям
-		query := strings.TrimSpace(msg.Text)
-		var keyword string
-		if query == "*" || strings.ToLower(query) == "все" {
-			keyword = ""
-		} else {
-			keyword = query
+
+		// Поиск локаций по тексту
+		kw := strings.TrimSpace(msg.Text)
+		if kw == "*" {
+			kw = ""
 		}
-		locations, err := locationService.SearchLocations("", "", 0, keyword)
-		if err != nil || len(locations) == 0 {
-			bot.Send(tgbotapi.NewMessage(chatID, "По вашему запросу ничего не найдено."))
-		} else {
-			var buttons []tgbotapi.InlineKeyboardButton
-			for _, loc := range locations {
-				btnText := loc.Name
-				if len(btnText) > 30 {
-					btnText = btnText[:30] + "..."
-				}
-				buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(btnText, fmt.Sprintf("LOC_%d", loc.ID)))
-			}
-			replyText := fmt.Sprintf("Найдено результатов: %d", len(locations))
-			msgReply := tgbotapi.NewMessage(chatID, replyText)
-			if len(buttons) > 0 {
-				msgReply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(buttons...)
-			}
-			bot.Send(msgReply)
+		locs, err := locationService.SearchLocations("", "", 0, kw)
+		if err != nil || len(locs) == 0 {
+			bot.Send(tgbotapi.NewMessage(chatID, "Ничего не найдено."))
+			continue
 		}
+
+		btns := make([]tgbotapi.InlineKeyboardButton, len(locs))
+		for i, loc := range locs {
+			name := loc.Name
+			if len(name) > 30 {
+				name = name[:30] + "..."
+			}
+			btns[i] = tgbotapi.NewInlineKeyboardButtonData(name, fmt.Sprintf("LOC_%d", loc.ID))
+		}
+		row := tgbotapi.NewInlineKeyboardRow(btns...)
+		reply := tgbotapi.NewMessage(chatID, fmt.Sprintf("Найдено: %d", len(locs)))
+		reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(row)
+		bot.Send(reply)
 	}
 }

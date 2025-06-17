@@ -65,10 +65,10 @@ func main() {
 	locationRepo := repository.NewLocationRepository(db)
 	tripRepo := repository.NewTripRepository(db)
 	bookingRepo := repository.NewBookingRepository(db)
-	messageRepo := repository.NewMessageRepository(db)
+
 	subRepo := repository.NewSubscriptionRepository(db)
 	// Инициализируем сервисы
-	authService := service.NewAuthService(userRepo)
+
 	userService := service.NewUserService(userRepo)
 	locationService := service.NewLocationService(locationRepo)
 	tripService := service.NewTripService(tripRepo, locationRepo)
