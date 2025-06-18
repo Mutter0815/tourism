@@ -21,9 +21,10 @@ func userKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	return tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton("📍 Найти локации"),
-			tgbotapi.NewKeyboardButton("🗺 Новый маршрут"),
+			tgbotapi.NewKeyboardButton("🏨 Бронирование"),
 		),
 		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("🗺 Новый маршрут"),
 			tgbotapi.NewKeyboardButton("🛎 Поддержка"),
 		),
 	)
@@ -105,6 +106,7 @@ func main() {
 	activeTrip := make(map[int64]int)
 	pendingBooking := make(map[int64]int)
 	pendingAddPhoto := make(map[int64]int)
+	searchMode := make(map[int64]string)
 
 	for update := range updates {
 		// inline callbacks
@@ -130,9 +132,22 @@ func main() {
 				msg.ParseMode = "Markdown"
 				btnAdd := tgbotapi.NewInlineKeyboardButtonData("➕ В маршрут", fmt.Sprintf("ADDTRIP_%d", id))
 				btnBook := tgbotapi.NewInlineKeyboardButtonData("🛎 Забронировать", fmt.Sprintf("BOOK_%d", id))
-				msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-					tgbotapi.NewInlineKeyboardRow(btnAdd, btnBook),
-				)
+
+				switch searchMode[userID] {
+				case "location":
+					msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+						tgbotapi.NewInlineKeyboardRow(btnAdd),
+					)
+				case "booking":
+					msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+						tgbotapi.NewInlineKeyboardRow(btnBook),
+					)
+				default:
+					msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+						tgbotapi.NewInlineKeyboardRow(btnAdd, btnBook),
+					)
+				}
+				delete(searchMode, userID)
 				bot.Send(msg)
 
 			// добавить в маршрут
@@ -259,6 +274,12 @@ func main() {
 			// кнопки меню
 			switch text {
 			case "📍 Найти локации":
+				searchMode[userID] = "location"
+				bot.Send(tgbotapi.NewMessage(chatID, "Введите слово для поиска (или * для всех):"))
+				continue
+
+			case "🏨 Бронирование":
+				searchMode[userID] = "booking"
 				bot.Send(tgbotapi.NewMessage(chatID, "Введите слово для поиска (или * для всех):"))
 				continue
 
@@ -329,6 +350,7 @@ func main() {
 			}
 
 			// фоновый поиск локаций по тексту
+			_, hasMode := searchMode[userID]
 			kw := strings.TrimSpace(text)
 			if kw == "*" {
 				kw = ""
@@ -336,6 +358,9 @@ func main() {
 			locs, err := locationService.SearchLocations("", "", 0, kw)
 			if err != nil || len(locs) == 0 {
 				bot.Send(tgbotapi.NewMessage(chatID, "Ничего не найдено."))
+				if hasMode {
+					delete(searchMode, userID)
+				}
 				continue
 			}
 			btns := make([]tgbotapi.InlineKeyboardButton, len(locs))
