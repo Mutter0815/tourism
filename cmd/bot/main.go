@@ -24,7 +24,6 @@ func userKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			tgbotapi.NewKeyboardButton("🗺 Новый маршрут"),
 		),
 		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("✅ Подписка на предложения"),
 			tgbotapi.NewKeyboardButton("🛎 Поддержка"),
 		),
 	)
@@ -47,7 +46,6 @@ func providerKeyboard() tgbotapi.ReplyKeyboardMarkup {
 func supportKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	return tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("📤 Рассылка"),
 			tgbotapi.NewKeyboardButton("📷 Добавить фото"),
 		),
 		tgbotapi.NewKeyboardButtonRow(
@@ -82,15 +80,12 @@ func main() {
 	locRepo := repository.NewLocationRepository(db)
 	tripRepo := repository.NewTripRepository(db)
 	bookRepo := repository.NewBookingRepository(db)
-	subRepo := repository.NewSubscriptionRepository(db)
 
 	// сервисы
 	locationService := service.NewLocationService(locRepo)
 	tripService := service.NewTripService(tripRepo, locRepo)
 	bookingService := service.NewBookingService(bookRepo)
 	chatService := service.NewChatService(bookRepo, userRepo, locRepo)
-	// OfferService now only depends on subscriptions
-	offerService := service.NewOfferService(subRepo)
 	authService := service.NewAuthService(userRepo)
 
 	// инициализация бота
@@ -281,30 +276,12 @@ func main() {
 				}
 				continue
 
-			case "✅ Подписка на предложения":
-				user, _ := userRepo.GetByTelegramID(userID)
-				if user == nil {
-					user, _ = authService.AuthUser(int64(userID), msg.From.UserName, msg.From.FirstName, msg.From.LastName)
-				}
-				offerService.Subscribe(user.ID)
-				bot.Send(tgbotapi.NewMessage(chatID, "Вы подписаны на рассылку предложений."))
-				continue
-
 			case "🛎 Поддержка":
 				bot.Send(tgbotapi.NewMessage(chatID, "Перейдите в @TouristSupportHelpBot для поддержки."))
 				continue
 
 			case "📦 Мои бронирования":
 				bot.Send(tgbotapi.NewMessage(chatID, "Функция пока не реализована."))
-				continue
-
-			case "📤 Рассылка":
-				user, _ := userRepo.GetByTelegramID(userID)
-				if user.Role != "support" {
-					bot.Send(tgbotapi.NewMessage(chatID, "Команда доступна только поддержке."))
-				} else {
-					bot.Send(tgbotapi.NewMessage(chatID, "Используйте /broadcast <текст> для рассылки."))
-				}
 				continue
 
 			case "📷 Добавить фото":
@@ -333,20 +310,6 @@ func main() {
 						activeTrip[userID] = tripID
 						bot.Send(tgbotapi.NewMessage(chatID, "Маршрут создан. Добавляйте локации."))
 					}
-				case "subscribe_offers":
-					user, _ := userRepo.GetByTelegramID(userID)
-					if user == nil {
-						user, _ = authService.AuthUser(int64(userID), msg.From.UserName, msg.From.FirstName, msg.From.LastName)
-					}
-					offerService.Subscribe(user.ID)
-					bot.Send(tgbotapi.NewMessage(chatID, "Вы подписаны на рассылку предложений."))
-				case "unsubscribe_offers":
-					user, _ := userRepo.GetByTelegramID(userID)
-					if user == nil {
-						user, _ = authService.AuthUser(int64(userID), msg.From.UserName, msg.From.FirstName, msg.From.LastName)
-					}
-					offerService.Unsubscribe(user.ID)
-					bot.Send(tgbotapi.NewMessage(chatID, "Вы отписаны от рассылки."))
 				case "addphoto":
 					args := msg.CommandArguments()
 					locID, err := strconv.Atoi(args)
@@ -360,17 +323,6 @@ func main() {
 							pendingAddPhoto[userID] = locID
 							bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Отправьте фото для локации #%d", locID)))
 						}
-					}
-				case "broadcast":
-					user, _ := userRepo.GetByTelegramID(userID)
-					if user.Role != "support" {
-						bot.Send(tgbotapi.NewMessage(chatID, "Команда доступна только поддержке."))
-					} else {
-						ids, _ := offerService.GetSubscriberIDs()
-						for _, tid := range ids {
-							bot.Send(tgbotapi.NewMessage(tid, msg.CommandArguments()))
-						}
-						bot.Send(tgbotapi.NewMessage(chatID, "Рассылка отправлена."))
 					}
 				}
 				continue

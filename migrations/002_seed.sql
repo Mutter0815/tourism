@@ -12,6 +12,3 @@ INSERT INTO locations (name, description, category, region, rating, latitude, lo
 -- Добавим фотографию для первой локации (фиктивный file_id для примера)
 INSERT INTO location_photos (location_id, file_id) VALUES
 (1, 'TEST_FILE_ID_1');
-
--- Создадим подписку на рассылку для первого пользователя
-INSERT INTO offer_subscriptions (user_id) VALUES (1);

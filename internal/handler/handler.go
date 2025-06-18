@@ -15,19 +15,17 @@ type Handler struct {
 	TripService     *service.TripService
 	BookingService  *service.BookingService
 	ChatService     *service.ChatService
-	OfferService    *service.OfferService
 }
 
 // NewHandler создает новый Handler с внедрением зависимостей (сервисов).
 func NewHandler(us *service.UserService, ls *service.LocationService, ts *service.TripService,
-	bs *service.BookingService, cs *service.ChatService, os *service.OfferService) *Handler {
+	bs *service.BookingService, cs *service.ChatService) *Handler {
 	return &Handler{
 		UserService:     us,
 		LocationService: ls,
 		TripService:     ts,
 		BookingService:  bs,
 		ChatService:     cs,
-		OfferService:    os,
 	}
 }
 
