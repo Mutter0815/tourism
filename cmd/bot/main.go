@@ -78,6 +78,7 @@ func main() {
 
 	// Репозитории и сервисы
 	userRepo := repository.NewUserRepository(db)
+	messageRepo := repository.NewMessageRepository(db)
 	locationService := service.NewLocationService(repository.NewLocationRepository(db))
 	tripService := service.NewTripService(repository.NewTripRepository(db), repository.NewLocationRepository(db))
 	bookingService := service.NewBookingService(repository.NewBookingRepository(db))
@@ -108,10 +109,9 @@ func main() {
 	for update := range updates {
 		// Inline callback
 		if cq := update.CallbackQuery; cq != nil {
+			// очищаем уведомление о нажатии
 			bot.Request(tgbotapi.NewCallback(cq.ID, ""))
-			fromID := cq.From.ID
-			data := cq.Data
-			// обработка inline... (как было)
+			// TODO: здесь позже использовать cq.From.ID и cq.Data для обработки
 			continue
 		}
 
