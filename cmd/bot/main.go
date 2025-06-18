@@ -89,6 +89,7 @@ func main() {
 	tripService := service.NewTripService(tripRepo, locRepo)
 	bookingService := service.NewBookingService(bookRepo)
 	chatService := service.NewChatService(bookRepo, userRepo, locRepo)
+	// OfferService now only depends on subscriptions
 	offerService := service.NewOfferService(subRepo)
 	authService := service.NewAuthService(userRepo)
 
