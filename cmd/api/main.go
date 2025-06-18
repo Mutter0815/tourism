@@ -66,7 +66,6 @@ func main() {
 	tripRepo := repository.NewTripRepository(db)
 	bookingRepo := repository.NewBookingRepository(db)
 
-	subRepo := repository.NewSubscriptionRepository(db)
 	// Инициализируем сервисы
 
 	userService := service.NewUserService(userRepo)
@@ -74,10 +73,9 @@ func main() {
 	tripService := service.NewTripService(tripRepo, locationRepo)
 	bookingService := service.NewBookingService(bookingRepo)
 	chatService := service.NewChatService(bookingRepo, userRepo, locationRepo)
-	offerService := service.NewOfferService(subRepo)
 
 	// Создаем Handler и регистрируем маршруты
-	h := handler.NewHandler(userService, locationService, tripService, bookingService, chatService, offerService)
+	h := handler.NewHandler(userService, locationService, tripService, bookingService, chatService)
 	router := gin.Default()
 	api := router.Group("/api")
 	{

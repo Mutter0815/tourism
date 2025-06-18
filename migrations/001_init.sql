@@ -57,7 +57,3 @@ CREATE TABLE messages (
     is_support BOOLEAN DEFAULT FALSE
 );
 
-CREATE TABLE offer_subscriptions (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE
-);
